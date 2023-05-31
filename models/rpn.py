@@ -1,4 +1,4 @@
-from tinygrad.tensor import Tensor, batchnorm
+from tinygrad.tensor import Tensor
 import tinygrad.nn as nn
 
 from extra.boxops import BoxCoder,process_box,nms
@@ -6,8 +6,7 @@ from extra.utils import Matcher,BalancedPositiveNegativeSampler
 
 #Source https://github.com/Okery/PyTorch-Simple-MaskRCNN
 
-
-class RPNHead(nn.Module):
+class RPNHead:
     def __init__(self, in_channels, num_anchors):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, in_channels, 3, 1, 1)
@@ -25,7 +24,7 @@ class RPNHead(nn.Module):
         return logits, bbox_reg
     
 
-class RegionProposalNetwork(nn.Module):
+class RegionProposalNetwork:
     def __init__(self, anchor_generator, head, 
                  fg_iou_thresh, bg_iou_thresh,
                  num_samples, positive_fraction,
@@ -89,5 +88,4 @@ class RegionProposalNetwork(nn.Module):
         if self.training:
             objectness_loss, box_loss = self.compute_loss(objectness, pred_bbox_delta, gt_box, anchor)
             return proposal, dict(rpn_objectness_loss=objectness_loss, rpn_box_loss=box_loss)
-        
         return proposal, {}

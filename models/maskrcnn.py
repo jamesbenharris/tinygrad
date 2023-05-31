@@ -1,11 +1,12 @@
 import math
 import numpy as np
 
-from tinygrad.tensor import Tensor, batchnorm
+from tinygrad.tensor import Tensor
 import tinygrad.nn as nn
-from extra.utils import get_child
-from extra.utils import AnchorGenerator
-from rpn import RPNHead, RegionProposalNetwork
+from extra.utils import get_child,AnchorGenerator,ImageTransforms
+from models.rpn import RPNHead, RegionProposalNetwork
+from extra.pooler import RoIAlign
+from extra.roi_heads import RoIHeads
 
 class MaskRCNN:
     def __init__(self, backbone, num_classes,
@@ -21,6 +22,7 @@ class MaskRCNN:
                  box_num_samples=512, box_positive_fraction=0.25,
                  box_reg_weights=(10., 10., 5., 5.),
                  box_score_thresh=0.1, box_nms_thresh=0.6, box_num_detections=100):
+        print("test")
         super().__init__()
         self.backbone = backbone
         out_channels = backbone.out_channels
@@ -40,7 +42,7 @@ class MaskRCNN:
              rpn_reg_weights,
              rpn_pre_nms_top_n, rpn_post_nms_top_n, rpn_nms_thresh)
         
-        #------------ RoIHeads --------------------------
+        #RoIHeads
         box_roi_pool = RoIAlign(output_size=(7, 7), sampling_ratio=2)
         
         resolution = box_roi_pool.output_size[0]
@@ -61,8 +63,8 @@ class MaskRCNN:
         dim_reduced = 256
         self.head.mask_predictor = MaskRCNNPredictor(out_channels, layers, dim_reduced, num_classes)
         
-        #------------ Transformer --------------------------
-        self.transformer = Transformer(
+        #Image Transformer
+        self.transformer = ImageTransforms(
             min_size=800, max_size=1333, 
             image_mean=[0.485, 0.456, 0.406], 
             image_std=[0.229, 0.224, 0.225])
