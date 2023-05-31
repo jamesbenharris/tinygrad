@@ -195,3 +195,56 @@ def get_child(parent, key):
     else:
       obj = getattr(obj, k)
   return obj
+
+class Matcher:
+    def __init__(self, high_threshold, low_threshold, allow_low_quality_matches=False):
+        self.high_threshold = high_threshold
+        self.low_threshold = low_threshold
+        self.allow_low_quality_matches = allow_low_quality_matches
+
+    def __call__(self, iou):
+        """
+        Arguments:
+            iou (Tensor[M, N]): containing the pairwise quality between 
+            M ground-truth boxes and N predicted boxes.
+
+        Returns:
+            label (Tensor[N]): positive (1) or negative (0) label for each predicted box,
+            -1 means ignoring this box.
+            matched_idx (Tensor[N]): indices of gt box matched by each predicted box.
+        """
+        
+        value, matched_idx = iou.max(dim=0)
+        label = Tensor.full((iou.shape[1],), -1, dtype=Tensor.float, device=iou.device) 
+        
+        label[value >= self.high_threshold] = 1
+        label[value < self.low_threshold] = 0
+        
+        if self.allow_low_quality_matches:
+            highest_quality = iou.max(dim=1)[0]
+            gt_pred_pairs = Tensor.where(iou == highest_quality[:, None])[1]
+            label[gt_pred_pairs] = 1
+
+        return label, matched_idx
+    
+
+class BalancedPositiveNegativeSampler:
+    def __init__(self, num_samples, positive_fraction):
+        self.num_samples = num_samples
+        self.positive_fraction = positive_fraction
+
+    def __call__(self, label):
+        positive = Tensor.where(label == 1)[0]
+        negative = Tensor.where(label == 0)[0]
+        num_pos = int(self.num_samples * self.positive_fraction)
+        num_pos = min(positive.numel(), num_pos)
+        num_neg = self.num_samples - num_pos
+        num_neg = min(negative.numel(), num_neg)
+        
+        pos_perm = Tensor.randperm(positive.numel(), device=positive.device)[:num_pos]
+        neg_perm = Tensor.randperm(negative.numel(), device=negative.device)[:num_neg]
+
+        pos_idx = positive[pos_perm]
+        neg_idx = negative[neg_perm]
+
+        return pos_idx, neg_idx
