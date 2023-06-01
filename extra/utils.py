@@ -8,7 +8,7 @@ from tinygrad.ops import GlobalCounters
 from tinygrad.tensor import Tensor
 from tinygrad.lazy import LazyNumpyArray, Device
 from tinygrad.shape.shapetracker import strides_for_shape
-#import torch.nn.functional as F
+import extra.functional as F
 
 OSX = platform.system() == "Darwin"
 
@@ -200,7 +200,7 @@ def get_child(parent, key):
 
 def roi_align(features, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio):
     if torch.__version__ >= "1.5.0":
-        return torch.ops.torchvision.roi_align(
+        return Tensor.ops.torchvision.roi_align(
             features, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, False)
     else:
         return torch.ops.torchvision.roi_align(
