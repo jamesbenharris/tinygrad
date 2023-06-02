@@ -1,5 +1,6 @@
 import math
 import numpy as np
+from typing import Tuple,List,Optional,Union,Callable
 
 #Need to validate
 class ReLU:
@@ -13,6 +14,127 @@ class ReLU:
         else:
             return np.maximum(0, input)
 
+#Need to validate
+class Flatten:
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return x.flatten()
+#Need to validate 
+class Conv2dNormActivation:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
+        stride: Union[int, Tuple[int, int]] = 1,
+        padding: Optional[Union[int, Tuple[int, int], str]] = None,
+        groups: int = 1,
+        norm_layer: Optional[Callable[..., np.ndarray]] = np.nan_to_num,
+        activation_layer: Optional[Callable[..., np.ndarray]] = np.maximum,
+        dilation: Union[int, Tuple[int, int]] = 1,
+        inplace: Optional[bool] = True,
+        bias: Optional[bool] = None,
+    ) -> None:
+        self.conv_params = {
+            'in_channels': in_channels,
+            'out_channels': out_channels,
+            'kernel_size': kernel_size,
+            'stride': stride,
+            'padding': padding,
+            'groups': groups,
+            'dilation': dilation,
+            'bias': bias,
+        }
+        self.norm_layer = norm_layer
+        self.activation_layer = activation_layer
+        self.inplace = inplace
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        weight = np.random.randn(*self.get_weight_shape())
+        bias = np.random.randn(self.conv_params['out_channels']) if self.conv_params['bias'] else None
+
+        # Convolution operation
+        conv_out = np.convolve(x, weight, mode='valid') + bias
+
+        # Normalization layer
+        if self.norm_layer is not None:
+            normalized_out = self.norm_layer(conv_out)
+        else:
+            normalized_out = conv_out
+
+        # Activation function
+        activated_out = self.activation_layer(normalized_out, 0, self.inplace)
+
+        return activated_out
+
+    def get_weight_shape(self) -> Tuple[int, int, int, int]:
+        in_channels = self.conv_params['in_channels']
+        out_channels = self.conv_params['out_channels']
+        kernel_size = self.conv_params['kernel_size']
+        return out_channels, in_channels, *kernel_size
+
+#Need to validate          
+def roi_align(input, boxes, output_size, spatial_scale=1.0, sampling_ratio=-1, aligned=False):
+    batch_size, num_channels, input_height, input_width = input.shape
+    num_rois = boxes.shape[0]
+    output_height, output_width = output_size
+
+    rois = boxes * spatial_scale
+
+    if aligned:
+        rois[:, [0, 2]] -= 0.5
+        rois[:, [1, 3]] -= 0.5
+
+    rois[:, [0, 2]] = np.clip(rois[:, [0, 2]], 0, input_width - 1)
+    rois[:, [1, 3]] = np.clip(rois[:, [1, 3]], 0, input_height - 1)
+
+    roi_heights = np.maximum(rois[:, 3] - rois[:, 1] + 1, 1)
+    roi_widths = np.maximum(rois[:, 2] - rois[:, 0] + 1, 1)
+
+    bin_height = roi_heights / output_height
+    bin_width = roi_widths / output_width
+
+    if sampling_ratio > 0:
+        sampling_points = sampling_ratio
+    else:
+        sampling_points = np.ceil(np.maximum(roi_heights / output_height, roi_widths / output_width)).astype(int)
+
+    pooled_rois = np.zeros((num_rois, num_channels, output_height, output_width))
+
+    for i in range(num_rois):
+        for c in range(num_channels):
+            y_indices = np.linspace(rois[i, 1], rois[i, 3], output_height * sampling_points)
+            x_indices = np.linspace(rois[i, 0], rois[i, 2], output_width * sampling_points)
+
+            y_grid, x_grid = np.meshgrid(y_indices, x_indices)
+
+            y0 = np.floor(y_grid).astype(int)
+            y1 = y0 + 1
+            x0 = np.floor(x_grid).astype(int)
+            x1 = x0 + 1
+
+            y0 = np.clip(y0, 0, input_height - 1)
+            y1 = np.clip(y1, 0, input_height - 1)
+            x0 = np.clip(x0, 0, input_width - 1)
+            x1 = np.clip(x1, 0, input_width - 1)
+
+            Q11 = input[0, c, y0, x0]
+            Q12 = input[0, c, y0, x1]
+            Q21 = input[0, c, y1, x0]
+            Q22 = input[0, c, y1, x1]
+
+            L = (y1 - y_grid) * (x1 - x_grid)
+            R = (y1 - y_grid) * (x_grid - x0)
+            T = (y_grid - y0) * (x1 - x_grid)
+            B = (y_grid - y0) * (x_grid - x0)
+
+            sampled_values = L * Q11 + R * Q12 + T * Q21 + B * Q22
+            pooled_values = np.mean(sampled_values.reshape(output_height, output_width, sampling_points, sampling_points), axis=(2, 3))
+
+            pooled_rois[i, c] = pooled_values
+
+    return pooled_rois
+
+#Need to validate
 def calculate_gain(nonlinearity, param=None):
     linear_fns = ['linear', 'conv1d', 'conv2d', 'conv3d', 'conv_transpose1d', 'conv_transpose2d', 'conv_transpose3d']
     if nonlinearity in linear_fns or nonlinearity == 'sigmoid':
@@ -34,6 +156,11 @@ def calculate_gain(nonlinearity, param=None):
     else:
         raise ValueError("Unsupported nonlinearity {}".format(nonlinearity))
 
+class LastLevelMaxPool:
+  def __call__(self, x):
+    return [Tensor.max_pool2d(x, 1, 2)]
+
+#Need to validate
 def kaiming_normal_init(tensor, a=0, mode='fan_in', nonlinearity='relu'):
     fan = np.prod(tensor.shape[:-1]) if mode == 'fan_out' else np.prod(tensor.shape[1:])
     gain = calculate_gain(nonlinearity, a)

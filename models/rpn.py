@@ -1,5 +1,6 @@
 from tinygrad.tensor import Tensor
 import tinygrad.nn as nn
+import extra.functional as F
 
 from extra.boxops import BoxCoder,process_box,nms
 from extra.utils import Matcher,BalancedPositiveNegativeSampler
@@ -11,6 +12,15 @@ class RPNHead:
     self.conv = nn.Conv2d(in_channels, 256, kernel_size=3, padding=1)
     self.cls_logits = nn.Conv2d(256, num_anchors, kernel_size=1)
     self.bbox_pred = nn.Conv2d(256, num_anchors * 4, kernel_size=1)
+
+  def __call__(self, x):
+    logits = []
+    bbox_reg = []
+    for feature in x:
+        t = Tensor.relu(self.conv(feature))
+        logits.append(self.cls_logits(t))
+        bbox_reg.append(self.bbox_pred(t))
+    return logits, bbox_reg
     
 
 class RegionProposalNetwork:
@@ -19,7 +29,6 @@ class RegionProposalNetwork:
                  num_samples, positive_fraction,
                  reg_weights,
                  pre_nms_top_n, post_nms_top_n, nms_thresh):
-        super().__init__()
         
         self.anchor_generator = anchor_generator
         self.head = head
@@ -42,7 +51,7 @@ class RegionProposalNetwork:
             post_nms_top_n = self._post_nms_top_n['testing']
             
         pre_nms_top_n = min(objectness.shape[0], pre_nms_top_n)
-        top_n_idx = objectness.topk(pre_nms_top_n)[1]
+        top_n_idx = objectness.argsort(descending=True)[:pre_nms_top_n]
         score = objectness[top_n_idx]
         proposal = self.box_coder.decode(pred_bbox_delta[top_n_idx], anchor[top_n_idx])
         
@@ -56,11 +65,11 @@ class RegionProposalNetwork:
         label, matched_idx = self.proposal_matcher(iou)
         
         pos_idx, neg_idx = self.fg_bg_sampler(label)
-        idx = torch.cat((pos_idx, neg_idx))
+        idx = np.concatenate((pos_idx, neg_idx))
         regression_target = self.box_coder.encode(gt_box[matched_idx[pos_idx]], anchor[pos_idx])
         
-        objectness_loss = F.binary_cross_entropy_with_logits(objectness[idx], label[idx])
-        box_loss = F.l1_loss(pred_bbox_delta[pos_idx], regression_target, reduction='sum') / idx.numel()
+        objectness_loss = binary_cross_entropy_with_logits(objectness[idx], label[idx])
+        box_loss = l1_loss(pred_bbox_delta[pos_idx], regression_target) / idx.size
 
         return objectness_loss, box_loss
         
@@ -77,4 +86,5 @@ class RegionProposalNetwork:
         if self.training:
             objectness_loss, box_loss = self.compute_loss(objectness, pred_bbox_delta, gt_box, anchor)
             return proposal, dict(rpn_objectness_loss=objectness_loss, rpn_box_loss=box_loss)
+        
         return proposal, {}

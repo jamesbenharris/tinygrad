@@ -200,7 +200,7 @@ def get_child(parent, key):
 
 def roi_align(features, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio):
     if torch.__version__ >= "1.5.0":
-        return Tensor.ops.torchvision.roi_align(
+        return torch.ops.torchvision.roi_align(
             features, rois, spatial_scale, pooled_height, pooled_width, sampling_ratio, False)
     else:
         return torch.ops.torchvision.roi_align(
@@ -227,7 +227,7 @@ class AnchorGenerator:
         hs = (sizes[:, None] * h_ratios[None, :]).view(-1)
         ws = (sizes[:, None] * w_ratios[None, :]).view(-1)
 
-        self.cell_anchor = torch.stack([-ws, -hs, ws, hs], dim=1) / 2
+        self.cell_anchor = Tensor.stack([-ws, -hs, ws, hs], dim=1) / 2
         
     def grid_anchor(self, grid_size, stride):
         dtype, device = self.cell_anchor.dtype, self.cell_anchor.device
