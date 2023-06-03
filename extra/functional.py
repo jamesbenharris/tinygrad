@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from typing import Tuple,List,Optional,Union,Callable
-
+import tinygrad.nn as nn
 #Need to validate
 class ReLU:
     def __init__(self, inplace=False):
@@ -18,59 +18,28 @@ class ReLU:
 class Flatten:
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return x.flatten()
+
+def zeros_(tensor):
+    tensor.fill(0.0)
 #Need to validate 
-class Conv2dNormActivation:
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        stride: Union[int, Tuple[int, int]] = 1,
-        padding: Optional[Union[int, Tuple[int, int], str]] = None,
-        groups: int = 1,
-        norm_layer: Optional[Callable[..., np.ndarray]] = np.nan_to_num,
-        activation_layer: Optional[Callable[..., np.ndarray]] = np.maximum,
-        dilation: Union[int, Tuple[int, int]] = 1,
-        inplace: Optional[bool] = True,
-        bias: Optional[bool] = None,
-    ) -> None:
-        self.conv_params = {
-            'in_channels': in_channels,
-            'out_channels': out_channels,
-            'kernel_size': kernel_size,
-            'stride': stride,
-            'padding': padding,
-            'groups': groups,
-            'dilation': dilation,
-            'bias': bias,
-        }
-        self.norm_layer = norm_layer
-        self.activation_layer = activation_layer
-        self.inplace = inplace
+def Conv2dNormActivation(
+  in_channels,
+  out_channels,
+  dilation=1,
+  stride=1,
+  use_gn=False,
+):
+  conv = nn.Conv2d(
+    in_channels,
+    out_channels,
+    kernel_size=3,
+    stride=stride,
+    padding=dilation,
+    dilation=dilation,
+    bias=False if use_gn else True
+  )
+  return conv
 
-    def __call__(self, x: np.ndarray) -> np.ndarray:
-        weight = np.random.randn(*self.get_weight_shape())
-        bias = np.random.randn(self.conv_params['out_channels']) if self.conv_params['bias'] else None
-
-        # Convolution operation
-        conv_out = np.convolve(x, weight, mode='valid') + bias
-
-        # Normalization layer
-        if self.norm_layer is not None:
-            normalized_out = self.norm_layer(conv_out)
-        else:
-            normalized_out = conv_out
-
-        # Activation function
-        activated_out = self.activation_layer(normalized_out, 0, self.inplace)
-
-        return activated_out
-
-    def get_weight_shape(self) -> Tuple[int, int, int, int]:
-        in_channels = self.conv_params['in_channels']
-        out_channels = self.conv_params['out_channels']
-        kernel_size = self.conv_params['kernel_size']
-        return out_channels, in_channels, *kernel_size
 
 #Need to validate          
 def roi_align(input, boxes, output_size, spatial_scale=1.0, sampling_ratio=-1, aligned=False):

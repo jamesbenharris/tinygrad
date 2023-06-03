@@ -71,7 +71,6 @@ class MaskRCNN:
         self.roi_heads.mask_roi_pool = RoIAlign(output_size=(14, 14), sampling_ratio=2)       
         self.roi_heads.mask_head = MaskRCNNHeads(out_channels, layers, 1)
         self.roi_heads.mask_predictor = MaskRCNNPredictor(out_channels, layers, dim_reduced, num_classes)
-
         #Image Transformer
         self.transformer = ImageTransforms(
             min_size=800, max_size=1333, 
@@ -85,7 +84,6 @@ class MaskRCNN:
         with open(fn, "rb") as f:
             state_dict = fake_torch_load(f.read())
         loaded_keys = []
-
         pretrained_msd = list(state_dict.items())
         del_list = [i for i in range(265, 271)] + [i for i in range(273, 279)]
         for i, del_idx in enumerate(del_list):
@@ -134,7 +132,7 @@ class FastRCNNConvFCHead:
         self.blocks = []
         previous_channels = in_channels
         for current_channels in conv_layers:
-            self.blocks.append(F.Conv2dNormActivation(previous_channels, current_channels, norm_layer=norm_layer))
+            self.blocks.append(F.Conv2dNormActivation(previous_channels, current_channels))
             previous_channels = current_channels
         self.blocks.append(F.Flatten())
         previous_channels = previous_channels * in_height * in_width
@@ -147,7 +145,7 @@ class FastRCNNConvFCHead:
             if isinstance(layer, nn.Conv2d):
                 F.kaiming_normal_init(layer.weight, mode="fan_out", nonlinearity="relu")
                 if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
+                    layer.bias.zeros
 
     def forward(self, x):
         for layer in self.blocks:
@@ -181,27 +179,21 @@ class MaskRCNNHeads:
             dilation (int): dilation rate of kernel
             norm_layer (callable, optional): Module specifying the normalization layer to use. Default: None
         """
-        self.blocks = []
+        blocks = []
         next_feature = in_channels
-        for layer_features in layers:
-            self.blocks.append(
-                F.Conv2dNormActivation(
-                    next_feature,
-                    layer_features,
-                    kernel_size=3,
-                    stride=1,
-                    padding=dilation,
-                    dilation=dilation,
-                    norm_layer=norm_layer,
-                )
-            )
-            next_feature = layer_features
+        
+        self.mask_fcn1 = F.Conv2dNormActivation(256, layers[0], dilation=dilation, stride=1, use_gn=False)
+        self.mask_fcn2 = F.Conv2dNormActivation(layers[0], layers[1], dilation=dilation, stride=1, use_gn=False)
+        self.mask_fcn3 = F.Conv2dNormActivation(layers[1], layers[2], dilation=dilation, stride=1, use_gn=False)
+        self.mask_fcn4 = F.Conv2dNormActivation(layers[2], layers[3], dilation=dilation, stride=1, use_gn=False)
+
+        self.blocks = [self.mask_fcn1, self.mask_fcn2, self.mask_fcn3, self.mask_fcn4]
 
         for layer in self.blocks:
             if isinstance(layer, nn.Conv2d):
                 F.kaiming_normal_init(layer.weight, mode="fan_out", nonlinearity="relu")
                 if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
+                    layer.bias.zeros
 
     def _load_from_state_dict(
         self,
@@ -214,12 +206,10 @@ class MaskRCNNHeads:
         error_msgs,
     ):
         version = local_metadata.get("version", None)
-        print("loadings")
         if version is None or version < 2:
             num_blocks = len(self.blocks)
             for i in range(num_blocks):
                 for type in ["weight", "bias"]:
-                    print(f"{prefix}mask_fcn{i+1}.{type}")
                     old_key = f"{prefix}mask_fcn{i+1}.{type}"
                     new_key = f"{prefix}{i}.0.{type}"
                     if old_key in state_dict:
@@ -239,6 +229,7 @@ class MaskRCNNPredictor:
     def __init__(self, in_channels, layers, dim_reduced, num_classes):
         self.mask_layers = []
         next_feature = in_channels
+
         for layer_idx, layer_features in enumerate(layers, 1):
             conv = nn.Conv2d(next_feature, layer_features, kernel_size=3, stride=1, padding=1)
             relu = F.ReLU(inplace=True)
@@ -249,6 +240,7 @@ class MaskRCNNPredictor:
         self.conv5_mask = nn.ConvTranspose2d(next_feature, dim_reduced, kernel_size=2, stride=2, padding=0)
         self.relu5 = F.ReLU(inplace=True)
         self.mask_fcn_logits = nn.Conv2d(dim_reduced, num_classes, kernel_size=1, stride=1, padding=0)
+
 
         for layer in self.mask_layers:
             if isinstance(layer, nn.Conv2d):
