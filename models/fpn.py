@@ -22,7 +22,6 @@ class FPN:
     ):
       if not inner_block:
         continue
-      print(len(last_inner.shape))
       inner_lateral = Tensor(F.interpolate(inner_block(feature), size=inner_top_down.shape[-2:], mode="bilinear"))
 
       last_inner = inner_lateral + inner_top_down
