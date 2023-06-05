@@ -2,6 +2,9 @@ import math
 import numpy as np
 from typing import Tuple,List,Optional,Union,Callable
 import tinygrad.nn as nn
+from PIL import Image
+from tinygrad.tensor import Tensor
+
 #Need to validate
 class ReLU:
     def __init__(self, inplace=False):
@@ -200,46 +203,372 @@ def pad(input, pad):
 
     return padded_input
 
-#Need to validate
-def interpolate(input, size=None, scale_factor=None, mode='bilinear'):
-    if size is None and scale_factor is None:
-        raise ValueError("Either 'size' or 'scale_factor' must be specified.")
+def constant(tensor,value):
+    return np.full(tensor.data.shape,value)
 
-    if scale_factor is not None:
-        if isinstance(scale_factor, float):
-            scale_factor = (scale_factor, scale_factor)
-        output_size = tuple(int(dim * factor) for dim, factor in zip(input.shape[2:], scale_factor))
+def interpolate(input, size=None, scale_factor=None, mode='nearest', align_corners=None, recompute_scale_factor=None, antialias=False):
+    if mode in ("nearest", "area", "nearest-exact"):
+        if align_corners is not None:
+            raise ValueError("align_corners option can only be set with the interpolating modes: linear | bilinear | bicubic | trilinear")
     else:
-        output_size = tuple(size)
+        if align_corners is None:
+            align_corners = False
 
-    if mode == 'nearest':
-        interpolation = np.round
-    elif mode == 'bilinear':
-        interpolation = np.interp
+    dim = len(input.shape) - 2  # Number of spatial dimensions.
+    ndim = len(input.shape)   # Number of dimensions.
+    
+    if size is not None and scale_factor is not None:
+        raise ValueError("only one of size or scale_factor should be defined")
+    elif size is not None:
+        assert scale_factor is None
+        scale_factors = None
+        if isinstance(size, (list, tuple)):
+            if len(size) != dim:
+                raise ValueError(f"Input and output must have the same number of spatial dimensions, but got input with spatial dimensions of {list(input.shape[2:])} and output size of {size}. Please provide input tensor in (N, C, d1, d2, ..., dK) format and output size in (o1, o2, ..., oK) format.")
+            output_size = size
+        else:
+            output_size = [size for _ in range(dim)]
+    elif scale_factor is not None:
+        assert size is None
+        output_size = None
+        if isinstance(scale_factor, (list, tuple)):
+            if len(scale_factor) != dim:
+                raise ValueError(f"Input and scale_factor must have the same number of spatial dimensions, but got input with spatial dimensions of {list(input.shape[2:])} and scale_factor of shape {scale_factor}. Please provide input tensor in (N, C, d1, d2, ..., dK) format and scale_factor in (s1, s2, ..., sK) format.")
+            scale_factors = scale_factor
+        else:
+            scale_factors = [scale_factor for _ in range(dim)]
     else:
-        raise ValueError("Invalid interpolation mode. Only 'nearest' and 'bilinear' are supported.")
+        raise ValueError("either size or scale_factor should be defined")
 
-    output = np.zeros((input.shape[0], input.shape[1], output_size[0], output_size[1]), dtype=input.dtype)
+    if recompute_scale_factor is not None and recompute_scale_factor and size is not None:
+        raise ValueError("recompute_scale_factor is not meaningful with an explicit size.")
 
-    for batch_idx in range(input.shape[0]):
-        for channel_idx in range(input.shape[1]):
-            for out_row in range(output_size[0]):
-                for out_col in range(output_size[1]):
-                    in_row = (out_row + 0.5) * input.shape[2] / output_size[0] - 0.5
-                    in_col = (out_col + 0.5) * input.shape[3] / output_size[1] - 0.5
-                    in_row = np.clip(in_row, 0, input.shape[2] - 1)
-                    in_col = np.clip(in_col, 0, input.shape[3] - 1)
-                    in_row_low, in_row_high = int(np.floor(in_row)), min(int(np.floor(in_row)) + 1, input.shape[2] - 1)
-                    in_col_low, in_col_high = int(np.floor(in_col)), min(int(np.floor(in_col)) + 1, input.shape[3] - 1)
-                    weight_row_high = in_row - in_row_low
-                    weight_row_low = 1 - weight_row_high
-                    weight_col_high = in_col - in_col_low
-                    weight_col_low = 1 - weight_col_high
-                    output[batch_idx, channel_idx, out_row, out_col] = (
-                        weight_row_low * (weight_col_low * input[batch_idx, channel_idx, in_row_low, in_col_low] +
-                                          weight_col_high * input[batch_idx, channel_idx, in_row_low, in_col_high]) +
-                        weight_row_high * (weight_col_low * input[batch_idx, channel_idx, in_row_high, in_col_low] +
-                                           weight_col_high * input[batch_idx, channel_idx, in_row_high, in_col_high])
-                    )
+    if mode == "area" and output_size is None:
+        recompute_scale_factor = True
 
-    return output
+    if recompute_scale_factor is not None and recompute_scale_factor:
+        assert scale_factors is not None
+        output_size = [
+            math.floor(input.shape[i + 2] * scale_factors[i])
+            for i in range(dim)
+        ]
+        scale_factors = None
+
+    if antialias and not (mode in ("bilinear", "bicubic") and ndim == 4):
+        raise ValueError("Anti-alias option is only supported for bilinear and bicubic modes")
+
+    if ndim == 3 and mode == "nearest":
+        return upsample_nearest1d(input, output_size, scale_factors)
+    if ndim == 4 and mode == "nearest":
+        return upsample_nearest2d(input, output_size, scale_factors)
+    if ndim == 5 and mode == "nearest":
+        return upsample_nearest3d(input, output_size, scale_factors)
+
+    if ndim == 3 and mode == "nearest-exact":
+        return upsample_nearest_exact1d(input, output_size, scale_factors)
+    if ndim == 4 and mode == "nearest-exact":
+        return upsample_nearest_exact2d(input, output_size, scale_factors)
+    if ndim == 5 and mode == "nearest-exact":
+        return upsample_nearest_exact3d(input, output_size, scale_factors)
+
+    if ndim == 3 and mode == "area":
+        return upsample_area1d(input, output_size, scale_factors)
+    if ndim == 4 and mode == "area":
+        return upsample_area2d(input, output_size, scale_factors)
+    if ndim == 5 and mode == "area":
+        return upsample_area3d(input, output_size, scale_factors)
+
+    if ndim == 3 and mode == "linear":
+        return upsample_linear1d(input, output_size, scale_factors, align_corners)
+    if ndim == 4 and mode == "bilinear":
+        return upsample_bilinear2d(input, output_size, scale_factors, align_corners, antialias)
+    if ndim == 5 and mode == "trilinear":
+        return upsample_trilinear3d(input, output_size, scale_factors, align_corners, antialias)
+
+    if ndim == 4 and mode == "bicubic":
+        return upsample_bicubic2d(input, output_size, scale_factors, align_corners, antialias)
+
+    raise ValueError(f"Input Error: Only 3D, 4D, and 5D input Tensors supported (got {ndim}D) for the modes: nearest | linear | bilinear | bicubic | trilinear | area | nearest-exact")
+
+def upsample_nearest1d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2]]
+
+    return np.repeat(input, np.round(scale_factors[0]).astype(int), axis=2)
+
+def upsample_nearest2d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3]]
+
+    return np.repeat(np.repeat(input, np.round(scale_factors[0]).astype(int), axis=2), np.round(scale_factors[1]).astype(int), axis=3)
+
+def upsample_nearest3d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3], output_size[2] / input.shape[4]]
+
+    return np.repeat(np.repeat(np.repeat(input, np.round(scale_factors[0]).astype(int), axis=2), np.round(scale_factors[1]).astype(int), axis=3), np.round(scale_factors[2]).astype(int), axis=4)
+
+def upsample_nearest_exact1d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2]]
+
+    if scale_factors[0] == 1.0:
+        return input
+
+    return np.interp(
+        np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+        np.linspace(0, 1, num=input.shape[2]),
+        input,
+        axis=2
+    )
+
+def upsample_nearest_exact2d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3]]
+
+    if scale_factors[0] == 1.0 and scale_factors[1] == 1.0:
+        return input
+
+    x = np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0]))
+    y = np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1]))
+
+    return np.interp(
+        y[:, np.newaxis],
+        np.linspace(0, 1, num=input.shape[3]),
+        np.interp(
+            x,
+            np.linspace(0, 1, num=input.shape[2]),
+            input,
+            axis=2
+        ),
+        axis=1
+    )
+
+def upsample_nearest_exact3d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3], output_size[2] / input.shape[4]]
+
+    if scale_factors[0] == 1.0 and scale_factors[1] == 1.0 and scale_factors[2] == 1.0:
+        return input
+
+    x = np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0]))
+    y = np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1]))
+    z = np.linspace(0, 1, num=int(input.shape[4] * scale_factors[2]))
+
+    return np.interp(
+        z[:, np.newaxis, np.newaxis],
+        np.linspace(0, 1, num=input.shape[4]),
+        np.interp(
+            y[:, np.newaxis],
+            np.linspace(0, 1, num=input.shape[3]),
+            np.interp(
+                x,
+                np.linspace(0, 1, num=input.shape[2]),
+                input,
+                axis=2
+            ),
+            axis=1
+        ),
+        axis=0
+    )
+
+def upsample_area1d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2]]
+
+    return np.repeat(input, np.round(scale_factors[0]).astype(int), axis=2)
+
+def upsample_area2d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3]]
+
+    return np.repeat(np.repeat(input, np.round(scale_factors[0]).astype(int), axis=2), np.round(scale_factors[1]).astype(int), axis=3)
+
+def upsample_area3d(input, output_size=None, scale_factors=None):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3], output_size[2] / input.shape[4]]
+
+    return np.repeat(np.repeat(np.repeat(input, np.round(scale_factors[0]).astype(int), axis=2), np.round(scale_factors[1]).astype(int), axis=3), np.round(scale_factors[2]).astype(int), axis=4)
+
+def upsample_linear1d(input, output_size=None, scale_factors=None, align_corners=False):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2]]
+
+    if align_corners:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=input.shape[2]),
+            input,
+            axis=2
+        )
+    else:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            input,
+            axis=2
+        )
+
+def upsample_bilinear2d(input, output_size=None, scale_factors=None, align_corners=False, antialias=False):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3]]
+
+    if align_corners and antialias:
+        raise ValueError("align_corners and antialias options are incompatible")
+
+    if align_corners:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=input.shape[2]),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=input.shape[3]),
+                input,
+                axis=3
+            ),
+            axis=2
+        )
+    elif antialias:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1])),
+                input,
+                axis=3
+            ),
+            axis=2
+        )
+    else:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1])),
+                input,
+                axis=3
+            ),
+            axis=2
+        )
+
+def upsample_trilinear3d(input, output_size=None, scale_factors=None, align_corners=False, antialias=False):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3], output_size[2] / input.shape[4]]
+
+    if align_corners and antialias:
+        raise ValueError("align_corners and antialias options are incompatible")
+
+    if align_corners:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=input.shape[2]),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=input.shape[3]),
+                np.interp(
+                    np.linspace(0, 1, num=output_size[2]),
+                    np.linspace(0, 1, num=input.shape[4]),
+                    input,
+                    axis=4
+                ),
+                axis=3
+            ),
+            axis=2
+        )
+    elif antialias:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1])),
+                np.interp(
+                    np.linspace(0, 1, num=output_size[2]),
+                    np.linspace(0, 1, num=int(input.shape[4] * scale_factors[2])),
+                    input,
+                    axis=4
+                ),
+                axis=3
+            ),
+            axis=2
+        )
+    else:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1])),
+                np.interp(
+                    np.linspace(0, 1, num=output_size[2]),
+                    np.linspace(0, 1, num=int(input.shape[4] * scale_factors[2])),
+                    input,
+                    axis=4
+                ),
+                axis=3
+            ),
+            axis=2
+        )
+
+def upsample_bicubic2d(input, output_size=None, scale_factors=None, align_corners=False, antialias=False):
+    if scale_factors is None:
+        if output_size is None:
+            raise ValueError("either size or scale_factor should be defined")
+        scale_factors = [output_size[0] / input.shape[2], output_size[1] / input.shape[3]]
+
+    if align_corners and antialias:
+        raise ValueError("align_corners and antialias options are incompatible")
+
+    if align_corners:
+        raise ValueError("align_corners option is not supported for bicubic interpolation")
+
+    if antialias:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1])),
+                input,
+                axis=3
+            ),
+            axis=2
+        )
+    else:
+        return np.interp(
+            np.linspace(0, 1, num=output_size[0]),
+            np.linspace(0, 1, num=int(input.shape[2] * scale_factors[0])),
+            np.interp(
+                np.linspace(0, 1, num=output_size[1]),
+                np.linspace(0, 1, num=int(input.shape[3] * scale_factors[1])),
+                input,
+                axis=3
+            ),
+            axis=2
+        )

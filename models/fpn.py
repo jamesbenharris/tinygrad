@@ -14,6 +14,7 @@ class FPN:
 
   def __call__(self, x: Tensor):
     last_inner = self.inner_blocks[-1](x[-1])
+    inner_top_down = Tensor(F.interpolate(last_inner, scale_factor=(2,2), mode="nearest"))
     results = []
     results.append(self.layer_blocks[-1](last_inner))
     for feature, inner_block, layer_block in zip(
@@ -21,8 +22,9 @@ class FPN:
     ):
       if not inner_block:
         continue
-      inner_top_down = Tensor(F.interpolate(Tensor.tensor(last_inner.numpy()), scale_factor=2, mode="nearest").numpy())
-      inner_lateral = inner_block(feature)
+      print(len(last_inner.shape))
+      inner_lateral = Tensor(F.interpolate(inner_block(feature), size=inner_top_down.shape[-2:], mode="bilinear"))
+
       last_inner = inner_lateral + inner_top_down
       layer_result = layer_block(last_inner)
       results.insert(0, layer_result)

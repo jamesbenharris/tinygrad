@@ -1,5 +1,7 @@
 import pickle
+import math
 import numpy as np
+import cv2
 from tqdm import tqdm
 import tempfile, platform
 from collections import defaultdict
@@ -324,30 +326,31 @@ class ImageTransforms:
         self.image_std = image_std
         
     def __call__(self, image, target):
-        image = self.normalize(image)
         image, target = self.resize(image, target)
-        image = self.batched_image(image)
-        
+        image = self.normalize(image)
+        image = image[np.newaxis,:,:,:]
+        #image = self.batched_image(image)
         return image, target
 
     def normalize(self, image):
         if image.shape[0] == 1:
             image = image.repeat(3, 1, 1)
-        
-        dtype, device = image.dtype, image.device
-        mean = Tensor.tensor(self.image_mean, dtype=dtype, device=device)
-        std = Tensor.tensor(self.image_std, dtype=dtype, device=device)
-        return (image - mean[:, None, None]) / std[:, None, None]
+        temp = Tensor(image)
+        dtype, device = temp.dtype, temp.device
+        mean = Tensor(self.image_mean, dtype=dtype, device=device)
+        std = Tensor(self.image_std, dtype=dtype, device=device)
+        return (temp - mean[:, None, None]) / std[:, None, None]
 
     def resize(self, image, target):
-        ori_image_shape = image.shape[-2:]
-        min_size = float(min(image.shape[-2:]))
-        max_size = float(max(image.shape[-2:]))
+        temp = image.transpose((2, 0, 1))
+        ori_image_shape = temp.shape[-2:]
+        min_size = float(min(temp.shape[-2:]))
+        max_size = float(max(temp.shape[-2:]))
         
         scale_factor = min(self.min_size / min_size, self.max_size / max_size)
         size = [round(s * scale_factor) for s in ori_image_shape]
-        image = F.interpolate(image[None], size=size, mode='bilinear', align_corners=False)[0]
-
+        image = cv2.resize(image, size, interpolation = cv2.INTER_LINEAR)
+        image = image.transpose((2, 0, 1))
         if target is None:
             return image, target
         
@@ -358,9 +361,9 @@ class ImageTransforms:
         
         if 'masks' in target:
             mask = target['masks']
-            mask = F.interpolate(mask[None].float(), size=size)[0].byte()
+            mask = F.interpolate(mask.float(), size=size)[0].byte()
             target['masks'] = mask
-            
+
         return image, target
     
     def batched_image(self, image, stride=32):
@@ -368,7 +371,7 @@ class ImageTransforms:
         max_size = tuple(math.ceil(s / stride) * stride for s in size)
 
         batch_shape = (image.shape[-3],) + max_size
-        batched_img = image.new_full(batch_shape, 0)
+        batched_img = np.full(batch_shape, 0)
         batched_img[:, :image.shape[-2], :image.shape[-1]] = image
 
         return batched_img[None]
@@ -407,6 +410,38 @@ def expand_detection(mask, box, padding):
     box_exp[:, 3] = y_c + h_half
     return padded_mask, box_exp.to(Tensor.int64)
 
+def to_image_list(tensors, size_divisible=32):
+  if isinstance(tensors, Tensor) and size_divisible > 0:
+    tensors = [tensors]
+
+  if isinstance(tensors, ImageList):
+    return tensors
+  elif isinstance(tensors, Tensor):
+    # single tensor shape can be inferred
+    assert tensors.ndim == 4
+    image_sizes = [tensor.shape[-2:] for tensor in tensors]
+    return ImageList(tensors, image_sizes)
+  elif isinstance(tensors, (tuple, list)):
+    max_size = tuple(max(s) for s in zip(*[img.shape for img in tensors]))
+    if size_divisible > 0:
+
+      stride = size_divisible
+      max_size = list(max_size)
+      max_size[1] = int(math.ceil(max_size[1] / stride) * stride)
+      max_size[2] = int(math.ceil(max_size[2] / stride) * stride)
+      max_size = tuple(max_size)
+
+    batch_shape = (len(tensors),) + max_size
+    batched_imgs = np.zeros(batch_shape, dtype=tensors[0].dtype.np)
+    for img, pad_img in zip(tensors, batched_imgs):
+      pad_img[: img.shape[0], : img.shape[1], : img.shape[2]] += img.numpy()
+
+    batched_imgs = Tensor(batched_imgs)
+    image_sizes = [im.shape[-2:] for im in tensors]
+
+    return ImageList(batched_imgs, image_sizes)
+  else:
+    raise TypeError("Unsupported type for to_image_list: {}".format(type(tensors)))
 
 def paste_masks_in_image(mask, box, padding, image_shape):
     mask, box = expand_detection(mask, box, padding)
@@ -419,7 +454,7 @@ def paste_masks_in_image(mask, box, padding, image_shape):
         w = max(b[2] - b[0], 1)
         h = max(b[3] - b[1], 1)
         
-        m = F.interpolate(m[None, None], size=(h, w), mode='bilinear', align_corners=False)[0][0]
+        m = F.interpolate(m[None, None], size=(h, w), mode='bilinear')[0][0]
 
         x1 = max(b[0], 0)
         y1 = max(b[1], 0)
@@ -428,3 +463,12 @@ def paste_masks_in_image(mask, box, padding, image_shape):
 
         im[y1:y2, x1:x2] = m[(y1 - b[1]):(y2 - b[1]), (x1 - b[0]):(x2 - b[0])]
     return im_mask
+
+class ImageList(object):
+  def __init__(self, tensors, image_sizes):
+    self.tensors = tensors
+    self.image_sizes = image_sizes
+
+  def to(self, *args, **kwargs):
+    cast_tensor = self.tensors.to(*args, **kwargs)
+    return ImageList(cast_tensor, self.image_sizes)

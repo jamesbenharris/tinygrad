@@ -1,4 +1,4 @@
-import math
+import inspect
 import numpy as np
 import re
 from tinygrad.tensor import Tensor
@@ -102,10 +102,9 @@ class MaskRCNN:
             except Exception as e: print(k,e)
             i+=1
         return loaded_keys
-
-    def forward(self, image, target=None):
-        ori_image_shape = image.shape[-2:]
         
+    def __call__(self, image, target=None):
+        ori_image_shape = image.shape[-2:]
         image, target = self.transformer(image, target)
         image_shape = image.shape[-2:]
         feature = self.backbone(image)
@@ -257,39 +256,49 @@ class MaskRCNNPredictor:
         return x
 
 class ResBackbone:
-    def __init__(self, num_classes, pretrained):
+    def __init__(self, backbone, pretrained):
         super().__init__()
-                
-        self.body = ResNet(50, num_classes=num_classes)
-        in_channels = 256
-        self.out_channels = 256
+
+        def forward(self,x):
+            out = self.bn1(self.conv1(x)).relu()
+            out = out.pad2d([1,1,1,1]).max_pool2d((3,3), 2)
+            out1 = out.sequential(self.layer1)
+            out2 = out1.sequential(self.layer2)
+            out3 = out2.sequential(self.layer3)
+            out4 = out3.sequential(self.layer4)
+            return [out1, out2, out3, out4]   
         
+        self.out_channels = 256
+
+        body = OrderedDict()
+        for attr, value in backbone.__dict__.items():
+            if attr != 'fc':
+                body[attr] = value
+
+        backbone.__dict__ = body
+
+        backbone.forward = forward.__get__(backbone, ResNet)
+
+        self.body = backbone
+
+        in_channels = 256
         in_channels_list = [
         in_channels,
         in_channels * 2,
         in_channels * 4,
         in_channels * 8,
         ]
-
         self.fpn = FPN(in_channels_list, self.out_channels)
-        
-    def forward(self, x):
+
+    def __call__(self, x):
         x = self.body(x)
         return self.fpn(x)
 
 def maskrcnn_resnet50(pretrained, num_classes, pretrained_backbone=True):
-    """
-    Constructs a Mask R-CNN model with a ResNet-50 backbone.
-    
-    Arguments:
-        pretrained (bool): If True, returns a model pre-trained on COCO train2017.
-        num_classes (int): number of classes (including the background).
-    """
-    
     if pretrained:
         backbone_pretrained = False
-        
-    backbone = ResBackbone( num_classes, pretrained_backbone)
+    resnet = resnet = ResNet(50, num_classes=num_classes)
+    backbone = ResBackbone( resnet, pretrained_backbone)
     box_head = FastRCNNConvFCHead(
         (backbone.out_channels, 7, 7), [256, 256, 256, 256], [1024], norm_layer=nn.BatchNorm2d
     )

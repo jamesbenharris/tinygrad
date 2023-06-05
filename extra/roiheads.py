@@ -1,3 +1,4 @@
+import math
 from tinygrad.tensor import Tensor
 import tinygrad.nn as nn
 import extra.functional as F
@@ -8,7 +9,7 @@ from extra.boxops import BoxCoder, box_iou, process_box, nms
 
 
 def cross_entropy(p, q):
-    return -sum([p[i]*log(q[i]) for i in range(len(p))])
+    return -sum([p[i]*math.log(q[i]) for i in range(len(p))])
 
 def fastrcnn_loss(class_logit, box_regression, label, regression_target):
     classifier_loss = F.cross_entropy(class_logit, label)
